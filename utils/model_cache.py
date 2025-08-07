@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 from threading import Lock
 import mlflow
 from mlflow.tracking import MlflowClient
-from .config import Config, CACHE_TIMEOUT_SECONDS
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -197,7 +197,7 @@ class ModelCache:
             loop = asyncio.get_event_loop()
             models = await asyncio.wait_for(
                 loop.run_in_executor(None, fetch_models),
-                timeout=CACHE_TIMEOUT_SECONDS
+                timeout=Config.CACHE_TIMEOUT_SECONDS
             )
             return models
             

@@ -49,7 +49,7 @@ class Config:
     CACHE_TIMEOUT_SECONDS: int = int(os.getenv("CACHE_TIMEOUT_SECONDS", "300"))
     
     # Feature Flags
-    ENABLE_MOCK_DATA: bool = os.getenv("ENABLE_MOCK_DATA", "false").lower() == "true"
+    ENABLE_MOCK_DATA: bool = os.getenv("ENABLE_MOCK_DATA", "false").lower() == "false"
     ENABLE_DEBUG_ENDPOINTS: bool = os.getenv("ENABLE_DEBUG_ENDPOINTS", "true").lower() == "true"
     
     @classmethod
