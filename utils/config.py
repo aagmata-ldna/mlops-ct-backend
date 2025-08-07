@@ -48,6 +48,12 @@ class Config:
     ENABLE_CACHE: bool = os.getenv("ENABLE_CACHE", "true").lower() == "true"
     CACHE_TIMEOUT_SECONDS: int = int(os.getenv("CACHE_TIMEOUT_SECONDS", "300"))
     
+    # Cache Persistence Configuration
+    CACHE_DIRECTORY: str = os.getenv("CACHE_DIRECTORY", "./cache")
+    ENABLE_CACHE_PERSISTENCE: bool = os.getenv("ENABLE_CACHE_PERSISTENCE", "true").lower() == "true"
+    CACHE_MAX_AGE_HOURS: int = int(os.getenv("CACHE_MAX_AGE_HOURS", "24"))
+    CACHE_FILE_NAME: str = "models_cache.json"
+    
     # Feature Flags
     ENABLE_MOCK_DATA: bool = os.getenv("ENABLE_MOCK_DATA", "false").lower() == "false"
     ENABLE_DEBUG_ENDPOINTS: bool = os.getenv("ENABLE_DEBUG_ENDPOINTS", "true").lower() == "true"

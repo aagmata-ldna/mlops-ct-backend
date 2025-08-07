@@ -418,8 +418,27 @@ curl -X DELETE "http://localhost:8000/models/DNA_Analysis_Model/1/monitor"
     "last_refresh": "2023-12-07T12:30:00",
     "is_refreshing": false,
     "cache_age_minutes": 0,
-    "is_stale": false
+    "is_stale": false,
+    "persistence": {
+      "enabled": true,
+      "cache_directory": "./cache",
+      "cache_file_exists": true,
+      "cache_file_age_hours": 0.0,
+      "cache_file_size_bytes": 1024,
+      "max_age_hours": 24
+    }
   }
+}
+```
+
+#### DELETE `/cache/clear` - Clear Persistent Cache
+**Description**: Clear the persistent cache file (forces fresh fetch on next startup)  
+**Response**:
+```json
+{
+  "message": "Persistent cache cleared successfully",
+  "timestamp": "2023-12-07T12:35:00",
+  "note": "Next startup will fetch fresh data from MLflow"
 }
 ```
 
@@ -590,10 +609,15 @@ LOG_LEVEL=INFO                      # Logging level (DEBUG/INFO/WARNING/ERROR)
 
 ### Performance & Caching
 ```bash
-CACHE_REFRESH_INTERVAL_MINUTES=30   # Cache refresh interval (default: 30 minutes)
-CACHE_TIMEOUT_SECONDS=120           # Cache initialization timeout (default: 120s)
-ENABLE_CACHE=true                   # Enable/disable caching (default: true)
-MAX_MODELS_RETURNED=1000            # Maximum models per request
+CACHE_REFRESH_INTERVAL_MINUTES=30      # Cache refresh interval (default: 30 minutes)
+CACHE_TIMEOUT_SECONDS=300              # Cache initialization timeout (default: 300s/5 minutes)
+ENABLE_CACHE=true                      # Enable/disable caching (default: true)
+MAX_MODELS_RETURNED=1000               # Maximum models per request
+
+# Persistent Cache Configuration (NEW!)
+ENABLE_CACHE_PERSISTENCE=true         # Enable persistent cache storage (default: true)
+CACHE_DIRECTORY=./cache                # Directory for cache files (default: ./cache)
+CACHE_MAX_AGE_HOURS=24                 # Max age before cache refresh (default: 24 hours)
 ```
 
 ### Feature Flags
@@ -696,31 +720,52 @@ CACHE_REFRESH_INTERVAL_MINUTES=60
 
 ## ⚡ Performance
 
-### Intelligent Caching System
+### Intelligent Caching System with Persistence
 
-The API implements a high-performance caching system that addresses the slow `client.search_registered_models()` problem:
+The API implements a high-performance caching system with persistent storage that addresses the slow `client.search_registered_models()` problem:
 
 **🚀 Startup Cache Loading**
-- Models are loaded once at server startup
+- **NEW**: Loads from persistent cache file if available (instant startup!)
+- Falls back to MLflow if cache is stale or missing
 - Background thread periodically refreshes cache (default: 30 minutes)  
 - Fast in-memory lookups for all model queries
 
+**💾 Persistent Cache Storage**
+- **NEW**: Automatically saves processed model data to local JSON files
+- **Super fast restarts**: No need to re-fetch from MLflow if cache is fresh
+- Configurable cache expiry (default: 24 hours)
+- Atomic file writes prevent corruption
+- Graceful degradation if cache files are corrupted
+
 **📊 Performance Benefits**
+- **First startup**: 10-30 seconds (fetches from MLflow)
+- **Subsequent startups**: ~1-2 seconds (loads from cache!)
 - **Production models**: ~50ms (vs ~5-10 seconds direct MLflow)
 - **All models**: ~20ms (vs ~10-30 seconds direct MLflow)
 - **Staging models**: ~30ms (vs ~3-8 seconds direct MLflow)
 
 **🔄 Cache Management**
 - Automatic background refresh keeps data current
+- Persistent cache automatically saved after refresh
 - Manual refresh available via `/cache/refresh` endpoint
+- Cache clearing available via `/cache/clear` endpoint
 - Intelligent fallback to direct MLflow calls if cache fails
 - Cache statistics available via `/cache/info` endpoint
 
 **⚙️ Configuration**
 ```bash
-# Set cache refresh interval (default: 30 minutes)
-CACHE_REFRESH_INTERVAL_MINUTES=15  # More frequent updates
-CACHE_REFRESH_INTERVAL_MINUTES=60  # Less frequent updates
+# Cache behavior
+CACHE_REFRESH_INTERVAL_MINUTES=15      # More frequent updates
+CACHE_REFRESH_INTERVAL_MINUTES=60      # Less frequent updates
+
+# Persistent cache settings
+ENABLE_CACHE_PERSISTENCE=true          # Enable persistent storage
+CACHE_DIRECTORY=./cache                 # Where to store cache files
+CACHE_MAX_AGE_HOURS=24                  # When to refresh from MLflow
+CACHE_MAX_AGE_HOURS=1                   # For testing/development
+
+# To disable persistence (always fetch from MLflow)
+ENABLE_CACHE_PERSISTENCE=false
 ```
 
 ## 📝 Notes

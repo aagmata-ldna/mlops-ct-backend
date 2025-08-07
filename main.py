@@ -10,6 +10,7 @@ import numpy as np
 import logging
 from utils import ModelTracker, TrackedModel, MonitoringManager, Config, initialize_model_cache, get_model_cache
 import asyncio
+import signal
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -65,14 +66,17 @@ async def initialize_cache_background():
 @app.on_event("shutdown") 
 async def shutdown_event():
     """Clean up resources on shutdown"""
-    logger.info("Shutting down MLOps Control Tower API...")
+    logger.info("🛑 Shutting down MLOps Control Tower API...")
     
-    # Stop background cache refresh
+    # Stop background cache refresh gracefully
     try:
-        get_model_cache().stop_background_refresh()
+        cache = get_model_cache()
+        await cache.stop_background_refresh_async()
         logger.info("✅ Cache background refresh stopped")
     except Exception as e:
         logger.warning(f"Error stopping cache refresh: {str(e)}")
+    
+    logger.info("👋 Shutdown complete")
 
 # Configure CORS
 app.add_middleware(
@@ -182,15 +186,45 @@ async def get_experiments():
 
 @app.get("/models", response_model=List[ModelInfo])
 async def get_production_models():
-    """Get production models using TrackedModel (real-time MLflow data)"""
+    """Get production models using cached data (fast!)"""
     try:
-        # Get production models from MLflow
+        # Get production models from cache first
+        cache = get_model_cache()
+        cached_models = cache.get_production_models()
+        
+        # Debug logging
+        logger.info(f"🔍 API Cache instance ID: {id(cache)}")
+        logger.info(f"🔍 Cache debug: models_by_stage keys: {list(cache._models_by_stage.keys())}")
+        logger.info(f"🔍 Cache debug: Production models count: {len(cached_models)}")
+        logger.info(f"🔍 Cache debug: All models count: {len(cache._all_models)}")
+        
+        if cached_models:
+            # Convert cached data to ModelInfo format
+            result = []
+            for model_data in cached_models:
+                try:
+                    result.append(ModelInfo(
+                        name=model_data['name'],
+                        version=model_data['version'],
+                        stage=model_data['stage'],
+                        creation_timestamp=datetime.fromisoformat(model_data['creation_timestamp']),
+                        last_updated_timestamp=datetime.fromisoformat(model_data['last_updated_timestamp']),
+                        description=model_data.get('description'),
+                        tags=model_data.get('tags', {}),
+                        metrics=model_data.get('metrics', {}),
+                        run_id=model_data['run_id']
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to process cached model {model_data.get('name', 'unknown')}: {str(e)}")
+                    continue
+            
+            logger.info(f"✅ Returned {len(result)} production models from cache")
+            return result
+        
+        # Fallback to direct MLflow call if cache is empty
+        logger.warning("Cache is empty, falling back to direct MLflow calls")
         tracked_models = model_tracker.get_production_models()
         
-        if not tracked_models:
-            # If no models found, return mock data
-            return get_mock_production_models()
-        
         # Convert TrackedModel instances to ModelInfo format
         result = []
         for tracked_model in tracked_models:
@@ -212,287 +246,215 @@ async def get_production_models():
                     ))
             except Exception as e:
                 logger.warning(f"Failed to process tracked model {tracked_model.run_id}: {str(e)}")
-                continue
-        
-        return result if result else get_mock_production_models()
-        
-    except Exception as e:
-        logger.error(f"Failed to get production models: {str(e)}")
-        # Fallback to mock data
-        return get_mock_production_models()
-
-def get_mock_production_models():
-    """Return mock production models as fallback"""
-    return [
-        {
-            "name": "DNA_Analysis_Model",
-            "version": "1",
-            "stage": "Production",
-            "creation_timestamp": datetime.now() - timedelta(days=30),
-            "last_updated_timestamp": datetime.now() - timedelta(days=5),
-            "description": "Main DNA sequence analysis model",
-            "tags": {"team": "genomics", "type": "classification"},
-            "metrics": {
-                "accuracy": 0.945,
-                "precision": 0.928,
-                "recall": 0.952,
-                "f1_score": 0.940,
-                "rmse": None,
-                "mae": None
-            },
-            "run_id": "mock_run_001"
-        },
-        {
-            "name": "Risk_Assessment_Model",
-            "version": "3",
-            "stage": "Production",
-            "creation_timestamp": datetime.now() - timedelta(days=45),
-            "last_updated_timestamp": datetime.now() - timedelta(days=10),
-            "description": "Assesses genetic risk factors for common diseases",
-            "tags": {"team": "clinical", "type": "risk_scoring"},
-            "metrics": {
-                "accuracy": 0.892,
-                "precision": 0.885,
-                "recall": 0.905,
-                "f1_score": 0.895,
-                "rmse": None,
-                "mae": None
-            },
-            "run_id": "mock_run_003"
-        },
-        {
-            "name": "Genomic_Variant_Classifier",
-            "version": "4",
-            "stage": "Production",
-            "creation_timestamp": datetime.now() - timedelta(days=20),
-            "last_updated_timestamp": datetime.now() - timedelta(days=3),
-            "description": "Classifies pathogenic vs benign genetic variants",
-            "tags": {"team": "genomics", "type": "classification"},
-            "metrics": {
-                "accuracy": 0.963,
-                "precision": 0.948,
-                "recall": 0.971,
-                "f1_score": 0.959,
-                "rmse": None,
-                "mae": None
-            },
-            "run_id": "mock_run_004"
-        }
-    ]
-
-@app.get("/models/all", response_model=List[ModelInfo])
-async def get_all_models():
-    """Get all models regardless of stage using TrackedModel (real-time MLflow data)"""
-    try:
-        # Get all registered models from MLflow
-        tracked_models = model_tracker.get_all_registered_models()
-        
-        if not tracked_models:
-            # If no models found, return mock data
-            return get_mock_all_models()
-        
-        # Convert TrackedModel instances to ModelInfo format
-        result = []
-        for tracked_model in tracked_models:
-            try:
-                model_info = tracked_model.get_model_info()
-                if model_info:
-                    metrics = tracked_model.get_all_metrics()
-                    
-                    result.append(ModelInfo(
-                        name=model_info['name'],
-                        version=model_info['version'],
-                        stage=model_info['stage'],
-                        creation_timestamp=model_info['creation_timestamp'],
-                        last_updated_timestamp=model_info['last_updated_timestamp'],
-                        description=model_info.get('description'),
-                        tags=model_info.get('tags', {}),
-                        metrics=metrics,
-                        run_id=tracked_model.run_id
-                    ))
-            except Exception as e:
-                logger.warning(f"Failed to process tracked model {tracked_model.run_id}: {str(e)}")
-                continue
-        
-        return result if result else get_mock_all_models()
-        
-    except Exception as e:
-        logger.error(f"Failed to get all models: {str(e)}")
-        # Fallback to mock data
-        return get_mock_all_models()
-
-def get_mock_all_models():
-    """Return mock all models as fallback"""
-    return [
-        {
-            "name": "DNA_Analysis_Model",
-            "version": "1",
-            "stage": "Production",
-            "creation_timestamp": datetime.now() - timedelta(days=30),
-            "last_updated_timestamp": datetime.now() - timedelta(days=5),
-            "description": "Main DNA sequence analysis model",
-            "tags": {"team": "genomics", "type": "classification"},
-            "metrics": {
-                "accuracy": 0.945,
-                "precision": 0.928,
-                "recall": 0.952,
-                "f1_score": 0.940,
-                "rmse": None,
-                "mae": None
-            },
-            "run_id": "mock_run_001"
-        },
-        {
-            "name": "Phenotype_Predictor",
-            "version": "2",
-            "stage": "Staging", 
-            "creation_timestamp": datetime.now() - timedelta(days=15),
-            "last_updated_timestamp": datetime.now() - timedelta(days=2),
-            "description": "Predicts phenotypic traits from genetic variants",
-            "tags": {"team": "ml", "type": "regression"},
-            "metrics": {
-                "accuracy": None,
-                "precision": None,
-                "recall": None,
-                "f1_score": None,
-                "rmse": 0.156,
-                "mae": 0.098
-            },
-            "run_id": "mock_run_002"
-        },
-        {
-            "name": "Risk_Assessment_Model",
-            "version": "3",
-            "stage": "Production",
-            "creation_timestamp": datetime.now() - timedelta(days=45),
-            "last_updated_timestamp": datetime.now() - timedelta(days=10),
-            "description": "Assesses genetic risk factors for common diseases",
-            "tags": {"team": "clinical", "type": "risk_scoring"},
-            "metrics": {
-                "accuracy": 0.892,
-                "precision": 0.885,
-                "recall": 0.905,
-                "f1_score": 0.895,
-                "rmse": None,
-                "mae": None
-            },
-            "run_id": "mock_run_003"
-        }
-    ]
-
-@app.get("/models/monitored/classifier", response_model=List[ModelInfo])
-async def get_monitored_classifier_models():
-    """Get all classifier models being monitored"""
-    try:
-        tracked_models = monitoring_manager.get_monitored_classifier_models()
-        
-        result = []
-        for tracked_model in tracked_models:
-            try:
-                model_info = tracked_model.get_model_info()
-                if model_info:
-                    metrics = tracked_model.get_all_metrics()
-                    
-                    result.append(ModelInfo(
-                        name=model_info['name'],
-                        version=model_info['version'],
-                        stage=model_info['stage'],
-                        creation_timestamp=model_info['creation_timestamp'],
-                        last_updated_timestamp=model_info['last_updated_timestamp'],
-                        description=model_info.get('description'),
-                        tags=model_info.get('tags', {}),
-                        metrics=metrics,
-                        model_type="classifier",
-                        run_id=tracked_model.run_id
-                    ))
-            except Exception as e:
-                logger.warning(f"Failed to process classifier model {tracked_model.run_id}: {str(e)}")
                 continue
         
         return result
         
     except Exception as e:
-        logger.error(f"Failed to get classifier models: {str(e)}")
+        logger.error(f"Failed to get production models: {str(e)}")
+        # Return empty list as fallback
+        return []
+
+@app.get("/models/all", response_model=List[ModelInfo])
+async def get_all_models():
+    """Get all models regardless of stage using cached data (fast!)"""
+    try:
+        # Get all models from cache first
+        cache = get_model_cache()
+        cached_models = cache.get_all_models()
+        
+        if cached_models:
+            # Convert cached data to ModelInfo format
+            result = []
+            for model_data in cached_models:
+                try:
+                    result.append(ModelInfo(
+                        name=model_data['name'],
+                        version=model_data['version'],
+                        stage=model_data['stage'],
+                        creation_timestamp=datetime.fromisoformat(model_data['creation_timestamp']),
+                        last_updated_timestamp=datetime.fromisoformat(model_data['last_updated_timestamp']),
+                        description=model_data.get('description'),
+                        tags=model_data.get('tags', {}),
+                        metrics=model_data.get('metrics', {}),
+                        run_id=model_data['run_id']
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to process cached model {model_data.get('name', 'unknown')}: {str(e)}")
+                    continue
+            
+            logger.info(f"✅ Returned {len(result)} models from cache")
+            return result
+        
+        # Fallback to direct MLflow call if cache is empty
+        logger.warning("Cache is empty, falling back to direct MLflow calls")
+        tracked_models = model_tracker.get_all_registered_models()
+        
+        # Convert TrackedModel instances to ModelInfo format
+        result = []
+        for tracked_model in tracked_models:
+            try:
+                model_info = tracked_model.get_model_info()
+                if model_info:
+                    metrics = tracked_model.get_all_metrics()
+                    
+                    result.append(ModelInfo(
+                        name=model_info['name'],
+                        version=model_info['version'],
+                        stage=model_info['stage'],
+                        creation_timestamp=model_info['creation_timestamp'],
+                        last_updated_timestamp=model_info['last_updated_timestamp'],
+                        description=model_info.get('description'),
+                        tags=model_info.get('tags', {}),
+                        metrics=metrics,
+                        run_id=tracked_model.run_id
+                    ))
+            except Exception as e:
+                logger.warning(f"Failed to process tracked model {tracked_model.run_id}: {str(e)}")
+                continue
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Failed to get all models: {str(e)}")
+        # Fallback to mock data
+        return []
+
+@app.get("/models/monitored/classifier", response_model=List[ModelInfo])
+async def get_monitored_classifier_models():
+    """Get all classifier models being monitored"""
+    try:
+        cache = get_model_cache()
+        cached_models = cache.get_monitored_models(model_type="classifier")
+
+        result = []
+        if cached_models:
+            for model_data in cached_models:
+                result.append(ModelInfo(
+                    name=model_data['name'],
+                    version=model_data['version'],
+                    stage=model_data['stage'],
+                    creation_timestamp=datetime.fromisoformat(model_data['creation_timestamp']),
+                    last_updated_timestamp=datetime.fromisoformat(model_data['last_updated_timestamp']),
+                    description=model_data.get('description'),
+                    tags=model_data.get('tags', {}),
+                    metrics=model_data.get('metrics', {}),
+                    model_type="classifier",
+                    run_id=model_data['run_id']
+                ))
+            return result
+
+        # Fallback
+        tracked_models = monitoring_manager.get_monitored_classifier_models()
+        for tracked_model in tracked_models:
+            model_info = tracked_model.get_model_info()
+            metrics = tracked_model.get_all_metrics()
+            result.append(ModelInfo(
+                name=model_info['name'],
+                version=model_info['version'],
+                stage=model_info['stage'],
+                creation_timestamp=model_info['creation_timestamp'],
+                last_updated_timestamp=model_info['last_updated_timestamp'],
+                description=model_info.get('description'),
+                tags=model_info.get('tags', {}),
+                metrics=metrics,
+                model_type="classifier",
+                run_id=tracked_model.run_id
+            ))
+        return result
+    except Exception as e:
+        logger.error(f"Failed to get monitored classifier models: {str(e)}")
         return []
 
 @app.get("/models/monitored/regressor", response_model=List[ModelInfo])
 async def get_monitored_regressor_models():
     """Get all regressor models being monitored"""
     try:
-        tracked_models = monitoring_manager.get_monitored_regressor_models()
-        
+        cache = get_model_cache()
+        cached_models = cache.get_monitored_models(model_type="regressor")
+
         result = []
+        if cached_models:
+            for model_data in cached_models:
+                result.append(ModelInfo(
+                    name=model_data['name'],
+                    version=model_data['version'],
+                    stage=model_data['stage'],
+                    creation_timestamp=datetime.fromisoformat(model_data['creation_timestamp']),
+                    last_updated_timestamp=datetime.fromisoformat(model_data['last_updated_timestamp']),
+                    description=model_data.get('description'),
+                    tags=model_data.get('tags', {}),
+                    metrics=model_data.get('metrics', {}),
+                    model_type="regressor",
+                    run_id=model_data['run_id']
+                ))
+            return result
+
+        tracked_models = monitoring_manager.get_monitored_regressor_models()
         for tracked_model in tracked_models:
-            try:
-                model_info = tracked_model.get_model_info()
-                if model_info:
-                    metrics = tracked_model.get_all_metrics()
-                    
-                    result.append(ModelInfo(
-                        name=model_info['name'],
-                        version=model_info['version'],
-                        stage=model_info['stage'],
-                        creation_timestamp=model_info['creation_timestamp'],
-                        last_updated_timestamp=model_info['last_updated_timestamp'],
-                        description=model_info.get('description'),
-                        tags=model_info.get('tags', {}),
-                        metrics=metrics,
-                        model_type="regressor",
-                        run_id=tracked_model.run_id
-                    ))
-            except Exception as e:
-                logger.warning(f"Failed to process regressor model {tracked_model.run_id}: {str(e)}")
-                continue
-        
+            model_info = tracked_model.get_model_info()
+            metrics = tracked_model.get_all_metrics()
+            result.append(ModelInfo(
+                name=model_info['name'],
+                version=model_info['version'],
+                stage=model_info['stage'],
+                creation_timestamp=model_info['creation_timestamp'],
+                last_updated_timestamp=model_info['last_updated_timestamp'],
+                description=model_info.get('description'),
+                tags=model_info.get('tags', {}),
+                metrics=metrics,
+                model_type="regressor",
+                run_id=tracked_model.run_id
+            ))
         return result
-        
     except Exception as e:
-        logger.error(f"Failed to get regressor models: {str(e)}")
+        logger.error(f"Failed to get monitored regressor models: {str(e)}")
         return []
 
 @app.get("/models/monitored", response_model=List[ModelInfo])
 async def get_monitored_models():
     """Get all models being monitored with real-time MLflow data"""
     try:
-        # Get monitored models using TrackedModel
-        tracked_models = monitoring_manager.get_monitored_models()
-        
-        if not tracked_models:
-            return []
-        
-        # Convert TrackedModel instances to ModelInfo format
+        cache = get_model_cache()
+        cached_models = cache.get_monitored_models()
+
         result = []
+        if cached_models:
+            for model_data in cached_models:
+                result.append(ModelInfo(
+                    name=model_data['name'],
+                    version=model_data['version'],
+                    stage=model_data['stage'],
+                    creation_timestamp=datetime.fromisoformat(model_data['creation_timestamp']),
+                    last_updated_timestamp=datetime.fromisoformat(model_data['last_updated_timestamp']),
+                    description=model_data.get('description'),
+                    tags=model_data.get('tags', {}),
+                    metrics=model_data.get('metrics', {}),
+                    model_type=model_data.get('model_type', 'classifier'),
+                    run_id=model_data['run_id']
+                ))
+            return result
+
+        tracked_models = monitoring_manager.get_monitored_models()
         monitored_list = monitoring_manager.get_monitored_models_list()
-        
         for i, tracked_model in enumerate(tracked_models):
-            try:
-                model_info = tracked_model.get_model_info()
-                if model_info:
-                    metrics = tracked_model.get_all_metrics()
-                    
-                    # Get model type from monitoring metadata
-                    model_type = "classifier"
-                    if i < len(monitored_list):
-                        model_type = monitored_list[i].get('model_type', 'classifier')
-                    
-                    result.append(ModelInfo(
-                        name=model_info['name'],
-                        version=model_info['version'],
-                        stage=model_info['stage'],
-                        creation_timestamp=model_info['creation_timestamp'],
-                        last_updated_timestamp=model_info['last_updated_timestamp'],
-                        description=model_info.get('description'),
-                        tags=model_info.get('tags', {}),
-                        metrics=metrics,
-                        model_type=model_type,
-                        run_id=tracked_model.run_id
-                    ))
-            except Exception as e:
-                logger.warning(f"Failed to process monitored model {tracked_model.run_id}: {str(e)}")
-                continue
-        
+            model_info = tracked_model.get_model_info()
+            metrics = tracked_model.get_all_metrics()
+            model_type = monitored_list[i].get("model_type", "classifier") if i < len(monitored_list) else "classifier"
+            result.append(ModelInfo(
+                name=model_info['name'],
+                version=model_info['version'],
+                stage=model_info['stage'],
+                creation_timestamp=model_info['creation_timestamp'],
+                last_updated_timestamp=model_info['last_updated_timestamp'],
+                description=model_info.get('description'),
+                tags=model_info.get('tags', {}),
+                metrics=metrics,
+                model_type=model_type,
+                run_id=tracked_model.run_id
+            ))
         return result
-        
+    
     except Exception as e:
         logger.error(f"Failed to fetch monitored models: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to fetch monitored models: {str(e)}")
@@ -505,9 +467,37 @@ async def get_production_models_detailed():
 
 @app.get("/models/staging", response_model=List[ModelInfo])
 async def get_staging_models():
-    """Get all staging models using TrackedModel"""
+    """Get all staging models using cached data (fast!)"""
     try:
-        # Get staging models from MLflow
+        # Get staging models from cache first
+        cache = get_model_cache()
+        cached_models = cache.get_staging_models()
+        
+        if cached_models:
+            # Convert cached data to ModelInfo format
+            result = []
+            for model_data in cached_models:
+                try:
+                    result.append(ModelInfo(
+                        name=model_data['name'],
+                        version=model_data['version'],
+                        stage=model_data['stage'],
+                        creation_timestamp=datetime.fromisoformat(model_data['creation_timestamp']),
+                        last_updated_timestamp=datetime.fromisoformat(model_data['last_updated_timestamp']),
+                        description=model_data.get('description'),
+                        tags=model_data.get('tags', {}),
+                        metrics=model_data.get('metrics', {}),
+                        run_id=model_data['run_id']
+                    ))
+                except Exception as e:
+                    logger.warning(f"Failed to process cached model {model_data.get('name', 'unknown')}: {str(e)}")
+                    continue
+            
+            logger.info(f"✅ Returned {len(result)} staging models from cache")
+            return result
+        
+        # Fallback to direct MLflow call if cache is empty
+        logger.warning("Cache is empty, falling back to direct MLflow calls")
         tracked_models = model_tracker.get_staging_models()
         
         if not tracked_models:
@@ -720,6 +710,21 @@ async def force_cache_refresh():
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to refresh cache: {str(e)}")
 
+@app.delete("/cache/clear")
+async def clear_persistent_cache():
+    """Clear the persistent cache file"""
+    try:
+        cache = get_model_cache()
+        cache._clear_persistent_cache()
+        
+        return {
+            "message": "Persistent cache cleared successfully",
+            "timestamp": datetime.now().isoformat(),
+            "note": "Next startup will fetch fresh data from MLflow"
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to clear persistent cache: {str(e)}")
+
 @app.get("/model/{model_name}/versions")
 async def get_model_versions(model_name: str):
     try:
@@ -819,43 +824,31 @@ async def get_model_drift(model_name: str, days: int = 30):
 @app.get("/dashboard/summary")
 async def get_dashboard_summary():
     try:
-        # Get experiments data
-        experiments_data = model_tracker.get_experiments()
-        active_experiments = len([exp for exp in experiments_data if exp.get('lifecycle_stage') == 'active'])
-        
-        # Get model counts using TrackedModel
-        production_models = model_tracker.get_production_models()
-        staging_models = model_tracker.get_staging_models()
-        all_models = model_tracker.get_all_registered_models()
-        
-        # Get monitored models count
+        cache = get_model_cache()
+        cache_stats = cache.get_cache_stats()
         monitored_count = monitoring_manager.get_monitored_count()
-        
-        # Estimate total runs (simplified since we don't need exact count)
-        estimated_runs = len(all_models) * 5  # Rough estimate
-        
+
         return {
-            "total_experiments": len(experiments_data),
-            "active_experiments": active_experiments,
-            "total_models": len(all_models),
+            "total_experiments": cache_stats.get("experiments", 5),
+            "active_experiments": cache_stats.get("active_experiments", 3),
+            "total_models": cache_stats.get("total_models", 0),
             "monitored_models": monitored_count,
-            "production_models": len(production_models),
-            "staging_models": len(staging_models),
-            "total_runs": estimated_runs,
+            "production_models": cache_stats["models_by_stage"].get("Production", 0),
+            "staging_models": cache_stats["models_by_stage"].get("Staging", 0),
+            "total_runs": cache_stats.get("total_runs", 45),
             "last_updated": datetime.now().isoformat()
         }
     except Exception as e:
         logger.error(f"Failed to get dashboard summary: {str(e)}")
-        # Return fallback data
         monitored_count = monitoring_manager.get_monitored_count()
         return {
-            "total_experiments": 5,
-            "active_experiments": 3,
-            "total_models": 8,
+            "total_experiments": 0,
+            "active_experiments": 0,
+            "total_models": 0,
             "monitored_models": monitored_count,
-            "production_models": 2,
-            "staging_models": 3,
-            "total_runs": 45,
+            "production_models": 0,
+            "staging_models": 0,
+            "total_runs": 0,
             "last_updated": datetime.now().isoformat()
         }
 
@@ -866,5 +859,24 @@ async def get_configuration():
 
 if __name__ == "__main__":
     import uvicorn
+    
+    # Signal handler for graceful shutdown
+    def signal_handler(signum, frame=None):
+        logger.info(f"🛑 Received signal {signum}, initiating graceful shutdown...")
+    
+    # Register signal handlers
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
     api_config = Config.get_api_config()
-    uvicorn.run(app, host=api_config["host"], port=api_config["port"])
+    
+    try:
+        uvicorn.run(
+            app, 
+            host=api_config["host"], 
+            port=api_config["port"],
+            access_log=True,
+            use_colors=True
+        )
+    except KeyboardInterrupt:
+        logger.info("🛑 Keyboard interrupt received, shutting down...")
