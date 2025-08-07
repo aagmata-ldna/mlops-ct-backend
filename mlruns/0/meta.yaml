@@ -1,6 +1,6 @@
-artifact_location: file:///Users/altairagamata/LifeDNA/mlops-control-tower/backend/mlruns/0
-creation_time: 1750826566688
+artifact_location: file:///Users/altairagamata/LifeDNA/mlops-ct-backend/mlruns/0
+creation_time: 1754555153872
 experiment_id: '0'
-last_update_time: 1750826566688
+last_update_time: 1754555153872
 lifecycle_stage: active
 name: Default
