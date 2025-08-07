@@ -44,6 +44,9 @@ class Config:
     # Model Tracking Configuration
     DEFAULT_MODEL_TYPE: str = "classifier"
     MAX_MODELS_RETURNED: int = int(os.getenv("MAX_MODELS_RETURNED", "1000"))
+    CACHE_REFRESH_INTERVAL_MINUTES: int = int(os.getenv("CACHE_REFRESH_INTERVAL_MINUTES", "30"))
+    ENABLE_CACHE: bool = os.getenv("ENABLE_CACHE", "true").lower() == "true"
+    CACHE_TIMEOUT_SECONDS: int = int(os.getenv("CACHE_TIMEOUT_SECONDS", "300"))
     
     # Feature Flags
     ENABLE_MOCK_DATA: bool = os.getenv("ENABLE_MOCK_DATA", "false").lower() == "true"

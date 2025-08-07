@@ -8,7 +8,8 @@ from pydantic import BaseModel
 from datetime import datetime, timedelta
 import numpy as np
 import logging
-from utils import ModelTracker, TrackedModel, MonitoringManager, Config
+from utils import ModelTracker, TrackedModel, MonitoringManager, Config, initialize_model_cache, get_model_cache
+import asyncio
 
 # Set up logging
 logger = logging.getLogger(__name__)
@@ -23,6 +24,55 @@ app = FastAPI(
 # Initialize model tracker and monitoring manager
 model_tracker = ModelTracker()
 monitoring_manager = MonitoringManager()
+
+@app.on_event("startup")
+async def startup_event():
+    """Initialize cache and background services on startup"""
+    logger.info("Starting up MLOps Control Tower API...")
+    
+    # Initialize model cache in background (non-blocking startup)
+    logger.info("Starting background model cache initialization...")
+    asyncio.create_task(initialize_cache_background())
+    logger.info("✅ API startup complete - cache initializing in background")
+
+async def initialize_cache_background():
+    """Initialize cache in background without blocking startup"""
+    if not Config.ENABLE_CACHE:
+        logger.info("📴 Cache disabled by configuration - using direct MLflow calls")
+        return
+        
+    try:
+        logger.info("🔄 Background cache initialization started...")
+        
+        # Add timeout to prevent hanging
+        timeout = Config.CACHE_TIMEOUT_SECONDS
+        cache_initialized = await asyncio.wait_for(
+            initialize_model_cache(), 
+            timeout=float(timeout)
+        )
+        
+        if cache_initialized:
+            cache_stats = get_model_cache().get_cache_stats()
+            logger.info(f"✅ Cache initialized successfully with {cache_stats['total_models']} models")
+        else:
+            logger.warning("⚠️ Cache initialization failed - will use direct MLflow calls")
+            
+    except asyncio.TimeoutError:
+        logger.error(f"⏰ Cache initialization timed out after {Config.CACHE_TIMEOUT_SECONDS}s - will use direct MLflow calls")
+    except Exception as e:
+        logger.error(f"❌ Cache initialization failed: {str(e)} - will use direct MLflow calls")
+
+@app.on_event("shutdown") 
+async def shutdown_event():
+    """Clean up resources on shutdown"""
+    logger.info("Shutting down MLOps Control Tower API...")
+    
+    # Stop background cache refresh
+    try:
+        get_model_cache().stop_background_refresh()
+        logger.info("✅ Cache background refresh stopped")
+    except Exception as e:
+        logger.warning(f"Error stopping cache refresh: {str(e)}")
 
 # Configure CORS
 app.add_middleware(
@@ -76,20 +126,37 @@ async def root():
 @app.get("/health")
 async def health_check():
     try:
-        client = mlflow.tracking.MlflowClient()
-        experiments = client.search_experiments()
+        # Check cache status
+        cache_stats = get_model_cache().get_cache_stats()
+        cache_ready = cache_stats["total_models"] > 0 or cache_stats["last_refresh"] is not None
+        
+        # Try MLflow connection
+        try:
+            client = mlflow.tracking.MlflowClient()
+            experiments = client.search_experiments()
+            mlflow_status = "connected"
+            experiments_count = len(experiments)
+        except Exception:
+            mlflow_status = "disconnected"
+            experiments_count = 0
+        
         return {
             "status": "healthy",
-            "mlflow_connection": "connected",
-            "experiments_count": len(experiments)
+            "mlflow_connection": mlflow_status,
+            "experiments_count": experiments_count,
+            "cache_status": {
+                "ready": cache_ready,
+                "total_models": cache_stats["total_models"],
+                "is_refreshing": cache_stats["is_refreshing"],
+                "last_refresh": cache_stats["last_refresh"]
+            }
         }
-    except Exception:
-        # Return mock data when MLflow is not available
+    except Exception as e:
         return {
             "status": "healthy",
-            "mlflow_connection": "mock_mode",
-            "error": "MLflow not configured - using mock data",
-            "experiments_count": 3
+            "mlflow_connection": "unknown", 
+            "cache_status": "unknown",
+            "error": str(e)
         }
 
 @app.get("/experiments", response_model=List[ExperimentInfo])
@@ -602,45 +669,56 @@ async def debug_monitored_models():
 
 @app.get("/cache/info")
 async def get_cache_info():
-    """Get information about the model tracking system"""
+    """Get information about the model tracking system and cache"""
     try:
+        # Get cache statistics
+        cache_stats = get_model_cache().get_cache_stats()
+        
         # Get monitoring information
         monitored_count = monitoring_manager.get_monitored_count()
         
-        # Get model counts from MLflow
-        production_models = model_tracker.get_production_models()
-        staging_models = model_tracker.get_staging_models()
-        all_models = model_tracker.get_all_registered_models()
-        
         return {
+            "cache_info": cache_stats,
             "tracking_info": {
-                "total_models": len(all_models),
-                "production_models": len(production_models),
-                "staging_models": len(staging_models),
+                "total_models": cache_stats["total_models"],
+                "production_models": cache_stats["models_by_stage"].get("Production", 0),
+                "staging_models": cache_stats["models_by_stage"].get("Staging", 0),
                 "monitored_models": monitored_count
             },
             "system_status": {
                 "mlflow_connected": True,
-                "tracking_method": "real-time"
+                "tracking_method": "cached",
+                "cache_enabled": True
             }
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to get tracking info: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get cache info: {str(e)}")
 
 @app.post("/cache/refresh")
 async def force_cache_refresh():
-    """Force refresh of model data (no-op since we use real-time data)"""
+    """Force an immediate cache refresh from MLflow"""
     try:
-        # Since we're using real-time MLflow data, just return current status
-        all_models = model_tracker.get_all_registered_models()
+        logger.info("Manual cache refresh triggered via API")
         
-        return {
-            "message": "No cache refresh needed - using real-time MLflow data",
-            "models_available": len(all_models),
-            "timestamp": datetime.now().isoformat()
-        }
+        # Force cache refresh
+        success = await get_model_cache().force_refresh()
+        
+        if success:
+            cache_stats = get_model_cache().get_cache_stats()
+            return {
+                "message": "Cache refreshed successfully",
+                "models_synced": cache_stats["total_models"],
+                "timestamp": datetime.now().isoformat(),
+                "cache_stats": cache_stats
+            }
+        else:
+            return {
+                "message": "Cache refresh failed",
+                "timestamp": datetime.now().isoformat(),
+                "error": "Failed to refresh cache from MLflow"
+            }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to refresh data: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to refresh cache: {str(e)}")
 
 @app.get("/model/{model_name}/versions")
 async def get_model_versions(model_name: str):

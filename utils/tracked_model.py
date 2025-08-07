@@ -140,7 +140,67 @@ class ModelTracker:
         return TrackedModel(run_id)
 
     def get_production_models(self) -> List[TrackedModel]:
-        """Get all production models"""
+        """Get all production models (now uses cache for better performance)"""
+        try:
+            from .model_cache import get_cached_production_models
+            cached_models = get_cached_production_models()
+            
+            # Convert cached data to TrackedModel instances
+            tracked_models = []
+            for model_data in cached_models:
+                try:
+                    tracked_models.append(TrackedModel(model_data['run_id']))
+                except Exception as e:
+                    logger.warning(f"Failed to create TrackedModel for {model_data['name']}: {str(e)}")
+                    continue
+            
+            return tracked_models
+        except Exception as e:
+            logger.error(f"Failed to get production models from cache: {str(e)}")
+            return self._get_production_models_direct()
+
+    def get_staging_models(self) -> List[TrackedModel]:
+        """Get all staging models (now uses cache for better performance)"""
+        try:
+            from .model_cache import get_cached_staging_models
+            cached_models = get_cached_staging_models()
+            
+            # Convert cached data to TrackedModel instances
+            tracked_models = []
+            for model_data in cached_models:
+                try:
+                    tracked_models.append(TrackedModel(model_data['run_id']))
+                except Exception as e:
+                    logger.warning(f"Failed to create TrackedModel for {model_data['name']}: {str(e)}")
+                    continue
+            
+            return tracked_models
+        except Exception as e:
+            logger.error(f"Failed to get staging models from cache: {str(e)}")
+            return self._get_staging_models_direct()
+
+    def get_all_registered_models(self) -> List[TrackedModel]:
+        """Get all registered models regardless of stage (now uses cache for better performance)"""
+        try:
+            from .model_cache import get_cached_all_models
+            cached_models = get_cached_all_models()
+            
+            # Convert cached data to TrackedModel instances
+            tracked_models = []
+            for model_data in cached_models:
+                try:
+                    tracked_models.append(TrackedModel(model_data['run_id']))
+                except Exception as e:
+                    logger.warning(f"Failed to create TrackedModel for {model_data['name']}: {str(e)}")
+                    continue
+            
+            return tracked_models
+        except Exception as e:
+            logger.error(f"Failed to get all models from cache: {str(e)}")
+            return self._get_all_models_direct()
+
+    def _get_production_models_direct(self) -> List[TrackedModel]:
+        """Direct MLflow call for production models (fallback)"""
         try:
             models = self.client.search_registered_models()
             production_models = []
@@ -152,11 +212,11 @@ class ModelTracker:
             
             return production_models
         except Exception as e:
-            logger.error(f"Failed to get production models: {str(e)}")
+            logger.error(f"Failed to get production models directly: {str(e)}")
             return []
 
-    def get_staging_models(self) -> List[TrackedModel]:
-        """Get all staging models"""
+    def _get_staging_models_direct(self) -> List[TrackedModel]:
+        """Direct MLflow call for staging models (fallback)"""
         try:
             models = self.client.search_registered_models()
             staging_models = []
@@ -168,11 +228,11 @@ class ModelTracker:
             
             return staging_models
         except Exception as e:
-            logger.error(f"Failed to get staging models: {str(e)}")
+            logger.error(f"Failed to get staging models directly: {str(e)}")
             return []
 
-    def get_all_registered_models(self) -> List[TrackedModel]:
-        """Get all registered models regardless of stage"""
+    def _get_all_models_direct(self) -> List[TrackedModel]:
+        """Direct MLflow call for all models (fallback)"""
         try:
             models = self.client.search_registered_models()
             all_models = []
@@ -183,7 +243,7 @@ class ModelTracker:
             
             return all_models
         except Exception as e:
-            logger.error(f"Failed to get all models: {str(e)}")
+            logger.error(f"Failed to get all models directly: {str(e)}")
             return []
 
     def get_model_by_name_version(self, model_name: str, version: str) -> Optional[TrackedModel]:

@@ -13,6 +13,7 @@ from .tracked_model import TrackedModel, ModelTracker
 from .monitoring_manager import MonitoringManager
 from .config import Config
 from .constants import ModelTypes, ModelStages, ResponseMessages, DefaultMetrics, APIEndpoints, StatusCodes, TimeConstants
+from .model_cache import ModelCache, get_model_cache, initialize_model_cache
 
 __all__ = [
     'TrackedModel',
@@ -25,7 +26,10 @@ __all__ = [
     'DefaultMetrics',
     'APIEndpoints',
     'StatusCodes',
-    'TimeConstants'
+    'TimeConstants',
+    'ModelCache',
+    'get_model_cache',
+    'initialize_model_cache'
 ]
 
 __version__ = '1.0.0'
